@@ -1,0 +1,116 @@
+.health-monitor {
+  text-align: center;
+  padding: 20px;
+  min-height: 100vh;
+}
+
+.health-monitor h2 {
+  margin-top: 20px;
+  margin-bottom: 30px;
+  font-size: 28px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 20px;
+  padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto 30px;
+}
+
+.card {
+  background: linear-gradient(145deg, #1e293b, #020617);
+  padding: 20px;
+  border-radius: 14px;
+  box-shadow: 0 0 14px rgba(0, 0, 0, 0.65);
+}
+
+.card-title {
+  font-size: 14px;
+  color: #a0aec0;
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+
+.status {
+  font-size: 18px;
+  margin-top: 6px;
+  color: #22c55e;
+}
+
+.status.critical {
+  color: #f87171;
+  font-weight: bold;
+}
+
+.chart-card {
+  grid-column: span 1;
+  min-height: 300px;
+}
+
+.chart-container {
+  position: relative;
+  height: 200px;
+  margin-top: 10px;
+}
+
+.charge-history {
+  grid-column: span 1;
+}
+
+.history {
+  text-align: left;
+  font-size: 15px;
+  line-height: 1.8;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 15px;
+  border-radius: 8px;
+  margin: 10px 0;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.history div {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.history div:last-child {
+  border-bottom: none;
+}
+
+.loading, .error {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  font-size: 20px;
+  color: #38bdf8;
+}
+
+.error {
+  color: #f87171;
+}
+
+button {
+  margin: 20px;
+}
+
+@media (max-width: 768px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    min-height: auto;
+  }
+
+  .chart-card {
+    grid-column: span 1;
+  }
+
+  .charge-history {
+    grid-column: span 1;
+  }
+}

@@ -1,0 +1,228 @@
+.trip-planner {
+  text-align: center;
+  padding: 20px;
+  min-height: 100vh;
+}
+
+.trip-planner h2 {
+  margin-top: 20px;
+  margin-bottom: 30px;
+  font-size: 28px;
+}
+
+.stats {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin: 20px;
+  flex-wrap: wrap;
+}
+
+.stats .card {
+  width: 190px;
+  padding: 15px;
+  text-align: center;
+}
+
+.stats .card b {
+  color: #38bdf8;
+  font-size: 18px;
+  display: block;
+  margin-top: 10px;
+}
+
+.stats .card select {
+  margin-top: 8px;
+  padding: 4px 8px;
+  background: #1e293b;
+  color: #38bdf8;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.input-container {
+  margin: 20px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+}
+
+.autocomplete-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 300px;
+}
+
+.autocomplete-wrapper input {
+  width: 100%;
+}
+
+.suggestions {
+  background: white;
+  color: black;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  border-radius: 6px;
+  max-height: 160px;
+  overflow-y: auto;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+}
+
+.suggestions div {
+  padding: 8px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.suggestions div:last-child {
+  border-bottom: none;
+}
+
+.suggestions div:hover {
+  background: #e5e7eb;
+}
+
+.button-group {
+  margin: 20px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.button-group button {
+  width: 100%;
+  max-width: 300px;
+}
+
+.map {
+  height: 430px;
+  width: 92%;
+  max-width: 900px;
+  margin: 20px auto;
+  border-radius: 14px;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.7);
+}
+
+.chargers-panel {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 430px;
+  overflow: hidden;
+  margin: 20px auto;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #334155;
+}
+
+.panel-header h4 {
+  margin: 0;
+  color: #38bdf8;
+  font-size: 14px;
+}
+
+.sort-controls {
+  margin-bottom: 8px;
+}
+
+.chargers-list {
+  flex: 1;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.charger-card {
+  background: rgba(30, 41, 59, 0.8);
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+  transition: 0.2s;
+  border-left: 3px solid transparent;
+}
+
+.charger-card:hover {
+  background: rgba(51, 65, 85, 0.9);
+  border-left-color: #38bdf8;
+}
+
+.charger-card.selected {
+  background: rgba(56, 189, 248, 0.1);
+  border-left-color: #38bdf8;
+  border: 1px solid #38bdf8;
+}
+
+.selected-detail {
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid #38bdf8;
+  border-radius: 6px;
+  padding: 8px;
+  border-top: 2px solid #38bdf8;
+}
+
+.selected-detail h5 {
+  margin: 0 0 6px 0;
+  color: #38bdf8;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selected-detail div {
+  margin: 3px 0;
+}
+
+@media (max-width: 768px) {
+  .stats {
+    flex-direction: column;
+  }
+
+  .stats .card {
+    width: 100%;
+  }
+
+  .map {
+    width: 95%;
+  }
+
+  .chargers-panel {
+    width: 95%;
+    max-height: 300px;
+  }
+
+  .trip-result {
+    width: 95%;
+  }
+}
+
+.family-badge {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+  color: white;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-left: 5px;
+  font-weight: bold;
+}
+
+.amenity-icon {
+  margin-right: 4px;
+  cursor: help;
+}

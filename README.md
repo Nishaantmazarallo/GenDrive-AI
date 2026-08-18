@@ -1,4 +1,4 @@
-# GenDrive AI - React & Express Version
+<img width="1919" height="852" alt="image" src="https://github.com/user-attachments/assets/d26ede6a-3e37-4845-b5b5-7681db412bf5" /># GenDrive AI - React & Express Version
 
 A modern EV (Electric Vehicle) smart trip planner with vehicle health monitoring and driving coach features.
 
@@ -234,6 +234,13 @@ For production, use a process manager like PM2:
 npm install -g pm2
 pm2 start backend/server.js
 ```
+
+Output
+
+<img width="1918" height="822" alt="Screenshot 2026-08-18 130031" src="https://github.com/user-attachments/assets/6d663a22-72ee-4bd1-ad30-3f9b65430520" />
+
+<img width="1919" height="852" alt="Screenshot 2026-08-18 130059" src="https://github.com/user-attachments/assets/83e8cd13-6714-48c1-9079-a98a9f86cb99" />
+<img width="1861" height="848" alt="Screenshot 2026-08-18 130045" src="https://github.com/user-attachments/assets/3be4a101-aee1-455a-91bb-2cff675dc4f6" />
 
 ## Future Enhancements
 

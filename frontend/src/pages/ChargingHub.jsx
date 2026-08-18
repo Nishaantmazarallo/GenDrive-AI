@@ -19,6 +19,8 @@ export default function ChargingHub() {
   const [obsWait, setObsWait] = useState(5)
   const [obsSuccess, setObsSuccess] = useState(true)
   const [submitting, setSubmitting] = useState(false)
+  const [safetyReport, setSafetyReport] = useState({ dark: 0, noStaff: 0, remote: 0, reportsCount: 0 })
+  const [safetyIssues, setSafetyIssues] = useState({ dark: false, noStaff: false, remote: false })
 
   const [optResult, setOptResult] = useState(null)
   const [optParams, setOptParams] = useState({ start_lat: 11.1271, start_lon: 79.2800, end_lat: 12.9716, end_lon: 79.1643, current_battery_pct: 30, battery_capacity_kwh: 60, desired_arrival_pct: 80 })
@@ -109,9 +111,30 @@ export default function ChargingHub() {
     try {
       const res = await axios.get(`/api/predict-wait?chargerId=${charger.id}&timeOfDay=${new Date().getHours()}`)
       setPrediction(res.data)
+      
+      const safetyRes = await axios.get(`/api/safety-reports/${charger.id}`)
+      setSafetyReport(safetyRes.data)
     } catch (e) {
-      console.error('prediction error', e)
+      console.error('prediction/safety error', e)
     }
+  }
+
+  async function submitSafetyReport() {
+    if (!selectedCharger) return
+    setSubmitting(true)
+    try {
+      await axios.post('/api/safety-reports', {
+        chargerId: selectedCharger.id,
+        issues: safetyIssues
+      })
+      const safetyRes = await axios.get(`/api/safety-reports/${selectedCharger.id}`)
+      setSafetyReport(safetyRes.data)
+      alert('Safety report submitted! Thank you for helping the community.')
+      setSafetyIssues({ dark: false, noStaff: false, remote: false })
+    } catch (e) {
+      console.error('safety report error', e)
+    }
+    setSubmitting(false)
   }
 
   async function submitObservation() {
@@ -314,6 +337,26 @@ export default function ChargingHub() {
               <label>Wait time (min): <input type="number" min="0" value={obsWait} onChange={e => setObsWait(e.target.value)} /></label>
               <label><input type="checkbox" checked={obsSuccess} onChange={e => setObsSuccess(e.target.checked)} /> Successful charge</label>
               <button onClick={submitObservation} disabled={submitting} className="submit-obs">{submitting ? 'Submitting...' : 'Submit'}</button>
+            </div>
+
+            <div className="safety-section" style={{marginTop: '20px', borderTop: '1px solid #334155', paddingTop: '15px'}}>
+              <h4>🛡️ Community Safety Insights</h4>
+              {safetyReport.reportsCount > 0 ? (
+                <div style={{fontSize: '12px', marginBottom: '10px'}}>
+                  {safetyReport.dark > 0 && <span style={{color: '#f87171', display: 'block'}}>⚠️ Reported: Poor Lighting ({safetyReport.dark})</span>}
+                  {safetyReport.noStaff > 0 && <span style={{color: '#f87171', display: 'block'}}>⚠️ Reported: No Staff present ({safetyReport.noStaff})</span>}
+                  {safetyReport.remote > 0 && <span style={{color: '#f87171', display: 'block'}}>⚠️ Reported: Very Remote area ({safetyReport.remote})</span>}
+                  {safetyReport.dark === 0 && safetyReport.noStaff === 0 && safetyReport.remote === 0 && <span style={{color: '#22c55e'}}>✓ No safety issues reported recently.</span>}
+                </div>
+              ) : <p style={{fontSize: '11px', color: '#94a3b8'}}>No safety reports yet. Be the first!</p>}
+              
+              <div className="report-safety" style={{background: '#0f172a', padding: '10px', borderRadius: '8px', marginTop: '10px'}}>
+                <div style={{fontSize: '12px', fontWeight: 'bold', marginBottom: '8px'}}>Report Safety Issues:</div>
+                <label style={{display: 'block', fontSize: '11px'}}><input type="checkbox" checked={safetyIssues.dark} onChange={e => setSafetyIssues({...safetyIssues, dark: e.target.checked})} /> Poor Lighting</label>
+                <label style={{display: 'block', fontSize: '11px'}}><input type="checkbox" checked={safetyIssues.noStaff} onChange={e => setSafetyIssues({...safetyIssues, noStaff: e.target.checked})} /> No Staff</label>
+                <label style={{display: 'block', fontSize: '11px', marginBottom: '8px'}}><input type="checkbox" checked={safetyIssues.remote} onChange={e => setSafetyIssues({...safetyIssues, remote: e.target.checked})} /> Too Remote</label>
+                <button onClick={submitSafetyReport} disabled={submitting} style={{width: '100%', fontSize: '11px', background: '#475569'}}>Submit Safety Check</button>
+              </div>
             </div>
           </div>
         )}

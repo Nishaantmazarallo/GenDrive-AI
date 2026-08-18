@@ -92,6 +92,15 @@ GenDriveAi/
 
 ### Running the Application
 
+### Charging-station data
+
+The trip planner discovers multi-brand public stations through Open Charge Map. Set
+OCM_API_KEY in backend/.env (copy backend/.env.example) before deployment so route
+searches have an authenticated provider quota. A station is shown only when it is
+returned by the provider. Tariffs are ranked only when Open Charge Map explicitly
+reports an INR amount; availability, live occupancy, and provider-app-only tariffs
+must be confirmed with the operator before charging.
+
 **Terminal 1 - Start Backend Server:**
 ```bash
 cd backend

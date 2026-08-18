@@ -28,12 +28,19 @@ export default function TripPlanner() {
   const [sortBy, setSortBy] = useState('score') // score, price, reliability, distance
   const [showChargersPanel, setShowChargersPanel] = useState(false)
   const [selectedCharger, setSelectedCharger] = useState(null)
+  const [connector, setConnector] = useState('')
+  const [maxPricePerKwh, setMaxPricePerKwh] = useState('')
   
   const [vehicleType, setVehicleType] = useState('CAR')
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const routeLine = useRef(null)
   const chargerMarkers = useRef([])
+  
+  // Range Impact States
+  const [acLevel, setAcLevel] = useState(1) // 0: Off, 1: Eco, 2: Max
+  const [avgSpeed, setAvgSpeed] = useState(80) // km/h
+  const [payload, setPayload] = useState(1) // Number of people
 
   useEffect(() => {
     // Initialize map
@@ -65,9 +72,23 @@ export default function TripPlanner() {
   useEffect(() => {
     if (vehicleInfo) {
       const profileMaxRange = vehicleInfo.estimated_range_km / (vehicleInfo.battery_percent / 100)
-      setRange(Math.round((battery / 100) * profileMaxRange))
+      
+      // Calculate impact factors
+      let acImpact = 1.0
+      if (acLevel === 1) acImpact = 0.92
+      if (acLevel === 2) acImpact = 0.85
+
+      let speedImpact = 1.0
+      if (avgSpeed > 100) speedImpact = 0.82
+      else if (avgSpeed > 80) speedImpact = 0.92
+      else if (avgSpeed < 60) speedImpact = 1.05 // More efficient at city speeds
+
+      let payloadImpact = 1.0 - (payload * 0.02) // 2% drop per person/load unit
+
+      const finalRange = (battery / 100) * profileMaxRange * acImpact * speedImpact * payloadImpact
+      setRange(Math.round(finalRange))
     }
-  }, [battery])
+  }, [battery, acLevel, avgSpeed, payload, vehicleInfo])
 
   const autoSearch = async (query, isStart) => {
     if (query.length < 2) {
@@ -138,7 +159,9 @@ export default function TripPlanner() {
           start_lat: startCoords.lat,
           start_lon: startCoords.lon,
           end_lat: endCoords.lat,
-          end_lon: endCoords.lon
+          end_lon: endCoords.lon,
+          connector,
+          max_price_per_kwh: maxPricePerKwh
         }
       })
 
@@ -178,6 +201,12 @@ export default function TripPlanner() {
     }
     return sorted
   }
+
+  const formatTariff = (charger) => charger.price_per_kwh !== null && charger.price_per_kwh !== undefined
+    ? `INR ${charger.price_per_kwh.toFixed(2)}/kWh`
+    : (charger.tariff_text || 'Tariff not reported')
+
+  const pricedRouteChargers = routeChargers.filter(charger => charger.price_per_kwh !== null && charger.price_per_kwh !== undefined)
 
   const planTrip = async () => {
     if (!start || !end) {
@@ -242,9 +271,13 @@ export default function TripPlanner() {
         stops = 3
       }
 
-      let instructions = `Distance: ${totalDistance.toFixed(1)} km\n\n`
-      instructions += `Usable Range per Charge: ${usableRange.toFixed(0)} km\n\n`
-      instructions += `Charging Stops Required: ${stops}\n\n`
+      const tripSummary = {
+        distance: parseFloat(totalDistance.toFixed(1)),
+        usableRange: parseFloat(usableRange.toFixed(0)),
+        stopsCount: stops,
+        stops: [],
+        noChargingNeeded: stops === 0
+      }
 
       if (stops > 0) {
         try {
@@ -254,12 +287,12 @@ export default function TripPlanner() {
               start_lat: startLat,
               start_lon: startLon,
               end_lat: endLat,
-              end_lon: endLon
+              end_lon: endLon,
+              connector,
+              max_price_per_kwh: maxPricePerKwh
             }
           })
           const allChargers = chargersRes.data.chargers || []
-          
-          instructions += 'Recommended Real Charging Stops:\n'
           
           for (let i = 1; i <= stops; i++) {
             const progress = i / (stops + 1)
@@ -294,15 +327,26 @@ export default function TripPlanner() {
                 .addTo(mapInstance.current)
                 .bindPopup(popupContent)
               
-              instructions += `Stop ${i}: ${bestCharger.name} (${bestCharger.network})\n`
-              instructions += `   💰 Price: ₹${bestCharger.price_per_kwh?.toFixed(2) || 'N/A'}/kWh\n`
-              instructions += `   🔌 Connector: ${bestCharger.connections || 'Unknown'}\n\n`
+              tripSummary.stops.push({
+                index: i,
+                name: bestCharger.name,
+                network: bestCharger.network,
+                price: bestCharger.price_per_kwh,
+                connections: bestCharger.connections || 'Unknown',
+                approxKm: (progress * totalDistance).toFixed(0),
+                isApprox: false
+              })
             } else {
               // Fallback to approximate point
               L.marker([targetLat, targetLon])
                 .addTo(mapInstance.current)
                 .bindPopup(`⚡ Charging Stop ${i} (Approx)`)
-              instructions += `Stop ${i} at approx ${(progress * totalDistance).toFixed(0)} km\n`
+              
+              tripSummary.stops.push({
+                index: i,
+                approxKm: (progress * totalDistance).toFixed(0),
+                isApprox: true
+              })
             }
           }
         } catch (charError) {
@@ -315,19 +359,23 @@ export default function TripPlanner() {
             L.marker([lat, lon])
               .addTo(mapInstance.current)
               .bindPopup(`⚡ Charging Stop ${i}`)
+              
+            tripSummary.stops.push({
+              index: i,
+              approxKm: ((i / (stops + 1)) * totalDistance).toFixed(0),
+              isApprox: true
+            })
           }
         }
-      } else {
-        instructions += 'No charging needed\n'
       }
 
-      setTripResult(instructions)
+      setTripResult(tripSummary)
 
       // Automatically fetch chargers on route and show cost comparison
       setLoadingChargers(true)
       try {
         const charRes = await axios.get('/api/route-chargers', {
-          params: { start_lat: startLat, start_lon: startLon, end_lat: endLat, end_lon: endLon }
+          params: { start_lat: startLat, start_lon: startLon, end_lat: endLat, end_lon: endLon, connector, max_price_per_kwh: maxPricePerKwh }
         })
         setRouteChargers(charRes.data.chargers || [])
         setRouteDistance(charRes.data.total_distance_km)
@@ -395,6 +443,45 @@ export default function TripPlanner() {
             <option value="LORRY">Lorry 🚛</option>
           </select>
         </div>
+      </div>
+
+      <div className="range-impact-simulator card" style={{marginBottom: '20px', padding: '20px', background: '#1e293b', border: '1px solid #334155', borderRadius: '12px'}}>
+        <h4 style={{margin: '0 0 15px 0', color: '#38bdf8'}}>🧠 AI Range Impact Simulator</h4>
+        <div style={{display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px'}}>
+          <div>
+            <label style={{fontSize: '12px', color: '#94a3b8'}}>AC Level: {acLevel === 0 ? 'OFF' : acLevel === 1 ? 'ECO' : 'MAX'}</label>
+            <input type="range" min="0" max="2" value={acLevel} onChange={e => setAcLevel(parseInt(e.target.value))} style={{width: '100%'}} />
+          </div>
+          <div>
+            <label style={{fontSize: '12px', color: '#94a3b8'}}>Avg Speed: {avgSpeed} km/h</label>
+            <input type="range" min="40" max="140" step="10" value={avgSpeed} onChange={e => setAvgSpeed(parseInt(e.target.value))} style={{width: '100%'}} />
+          </div>
+          <div>
+            <label style={{fontSize: '12px', color: '#94a3b8'}}>Passengers/Payload: {payload}</label>
+            <input type="range" min="1" max="5" value={payload} onChange={e => setPayload(parseInt(e.target.value))} style={{width: '100%'}} />
+          </div>
+        </div>
+        <div style={{marginTop: '15px', fontSize: '12px', color: '#22c55e', borderTop: '1px solid #334155', paddingTop: '10px'}}>
+          ℹ️ Real-time range adjusts based on driving conditions and cabin comfort settings.
+        </div>
+      </div>
+
+      <div className="card" style={{ marginBottom: '20px', padding: '16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '14px', alignItems: 'end' }}>
+        <label>
+          Compatible connector
+          <select value={connector} onChange={event => setConnector(event.target.value)} style={{ display: 'block', width: '100%', marginTop: '6px' }}>
+            <option value="">Any connector</option>
+            <option value="CCS">CCS</option>
+            <option value="Type 2">Type 2</option>
+            <option value="CHAdeMO">CHAdeMO</option>
+            <option value="Tesla">Tesla</option>
+          </select>
+        </label>
+        <label>
+          Budget cap (INR/kWh)
+          <input type="number" min="1" inputMode="decimal" value={maxPricePerKwh} onChange={event => setMaxPricePerKwh(event.target.value)} placeholder="No limit" style={{ display: 'block', width: '100%', marginTop: '6px' }} />
+        </label>
+        <div style={{ fontSize: '12px', color: '#a0aec0' }}>Only explicitly reported INR tariffs are used for budget recommendations.</div>
       </div>
 
       <div className="input-container">
@@ -489,7 +576,7 @@ export default function TripPlanner() {
                     ))}
                     {c.family_friendly && <span title="Family Friendly" style={{fontSize: '14px'}}>👨‍👩‍👧‍👦</span>}
                   </div>
-                  <div style={{fontSize: '11px', color: '#22c55e', marginTop: '2px'}}>💰 ₹{c.price_per_kwh?.toFixed(2) || 'N/A'}/kWh</div>
+                  <div style={{fontSize: '11px', color: '#22c55e', marginTop: '2px'}}>Cost: {formatTariff(c)}</div>
                   <div style={{fontSize: '11px', color: '#38bdf8'}}>🔌 {c.connections?.substring(0, 20) || 'N/A'}</div>
                   <div style={{fontSize: '11px', marginTop: '3px'}}>📏 {c.distance_to_route_km?.toFixed(1)}km away</div>
                   <div style={{fontSize: '11px'}}>{'⚡ ' + (c.fast ? 'Fast' : 'Standard')}</div>
@@ -502,9 +589,9 @@ export default function TripPlanner() {
                 <h5>{selectedCharger.name}</h5>
                 <div style={{fontSize: '12px'}}>
                   <div>Network: {selectedCharger.network}</div>
-                  <div>💰 ₹{selectedCharger.price_per_kwh?.toFixed(2) || 'N/A'}/kWh</div>
+                  <div>Cost: {formatTariff(selectedCharger)}</div>
                   <div>🔌 {selectedCharger.connections}</div>
-                  <div>📊 Reliability: {Math.round(selectedCharger.reliability*100)}%</div>
+                  <div>Reliability: {selectedCharger.reliability === null ? 'Not enough reports' : `${Math.round(selectedCharger.reliability * 100)}%`}</div>
                   <div>⚡ {selectedCharger.fast ? 'Fast charger' : 'Standard charger'}</div>
                 </div>
               </div>
@@ -513,18 +600,74 @@ export default function TripPlanner() {
         )}
       </div>
 
-      {tripResult && (
+      {tripResult && typeof tripResult === 'object' && (
+        <div className="trip-summary-dashboard">
+          <div className="summary-header">
+            <h3>🗺️ Trip Overview</h3>
+          </div>
+          <div className="summary-metrics">
+            <div className="metric-card">
+              <div className="icon">📏</div>
+              <div className="label">Total Distance</div>
+              <div className="value">{tripResult.distance} km</div>
+            </div>
+            <div className="metric-card">
+              <div className="icon">🔋</div>
+              <div className="label">Usable Range</div>
+              <div className="value">{tripResult.usableRange} km</div>
+            </div>
+            <div className="metric-card">
+              <div className="icon">🛑</div>
+              <div className="label">Required Stops</div>
+              <div className="value">{tripResult.stopsCount}</div>
+            </div>
+          </div>
+          
+          {tripResult.stopsCount > 0 ? (
+            <div className="stops-timeline">
+              <h4>Recommended Charging Stops</h4>
+              <div className="timeline-container">
+                {tripResult.stops.map((stop, idx) => (
+                  <div key={idx} className="timeline-stop">
+                    <div className="stop-marker">{stop.index}</div>
+                    <div className="stop-details">
+                      {stop.isApprox ? (
+                        <p>⚡ Approximate Stop at ~{stop.approxKm} km</p>
+                      ) : (
+                        <>
+                          <h5>{stop.name} <span className="network-tag">{stop.network}</span></h5>
+                          <div className="stop-info">
+                            <span className="price">💰 ₹{stop.price?.toFixed(2) || 'N/A'}/kWh</span>
+                            <span className="connector">🔌 {stop.connections}</span>
+                            <span className="distance">📍 ~{stop.approxKm} km into trip</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="no-stops-needed">
+              ✅ You have enough range to reach your destination without charging!
+            </div>
+          )}
+        </div>
+      )}
+
+      {tripResult && typeof tripResult === 'string' && (
         <pre className="trip-result">{tripResult}</pre>
       )}
 
-      {routeChargers.length > 0 && (
+      {pricedRouteChargers.length > 0 && (
         <div style={{marginTop: '20px'}}>
           <CostChart costData={{
             trip_distance_km: routeDistance || 0,
             needed_kwh: Math.round((routeDistance || 0) * 0.15),
             value_of_time_per_hour: 400,
-            chargers: routeChargers.map(c => {
-              const chg = ((routeDistance || 0) * 0.15) * (c.price_per_kwh || 15);
+            chargers: pricedRouteChargers.map(c => {
+              const chg = ((routeDistance || 0) * 0.15) * c.price_per_kwh;
               const dev = (c.distance_to_route_km || 0) * 6;
               const time = c.fast ? 60 : 200;
               return {
@@ -536,8 +679,8 @@ export default function TripPlanner() {
               }
             }),
             recommendation: {
-              best_charger: routeChargers[0]?.name || 'Unknown',
-              total_cost: Math.round((((routeDistance || 0) * 0.15) * (routeChargers[0]?.price_per_kwh || 15)) + ((routeChargers[0]?.distance_to_route_km || 0) * 6) + (routeChargers[0]?.fast ? 60 : 200))
+              best_charger: pricedRouteChargers[0]?.name || 'Unknown',
+              total_cost: Math.round((((routeDistance || 0) * 0.15) * pricedRouteChargers[0].price_per_kwh) + ((pricedRouteChargers[0].distance_to_route_km || 0) * 6) + (pricedRouteChargers[0].fast ? 60 : 200))
             }
           }} />
         </div>

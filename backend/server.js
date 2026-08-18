@@ -3,8 +3,13 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch'
 import NodeCache from 'node-cache'
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -270,24 +275,63 @@ app.get('/health', (req, res) => {
 });
 
 // ---- EV Charging Aggregator (OpenChargeMap integration with cache) ----
+function connectorNames(connections = []) {
+  return [...new Set(connections.map(connection => connection.ConnectionType?.Title).filter(Boolean))].join(', ') || 'Not reported';
+}
+
+function parseReportedTariff(usageCost) {
+  if (!usageCost) return { price_per_kwh: null, currency: null, pricing_source: 'unavailable' };
+  const amount = Number((String(usageCost).match(/(?:INR|Rs\.?|₹)\s*([0-9]+(?:\.[0-9]+)?)/i) || [])[1]);
+  return Number.isFinite(amount)
+    ? { price_per_kwh: amount, currency: 'INR', pricing_source: 'reported' }
+    : { price_per_kwh: null, currency: null, pricing_source: 'unavailable' };
+}
+
+function normalizeCharger(poi) {
+  const address = poi.AddressInfo || {};
+  const connections = poi.Connections || [];
+  const stats = chargerStats[poi.ID];
+  return {
+    id: String(poi.ID),
+    name: address.Title || poi.OperatorInfo?.Title || 'Unnamed charging station',
+    network: poi.OperatorInfo?.Title || 'Independent / not reported',
+    lat: address.Latitude,
+    lon: address.Longitude,
+    ...parseReportedTariff(poi.UsageCost),
+    tariff_text: poi.UsageCost || null,
+    rating: poi.Rating || null,
+    reliability: stats ? Number((stats.successes / stats.attempts).toFixed(2)) : null,
+    avg_wait_min: stats ? Number(stats.ewmaWait.toFixed(1)) : null,
+    fast: connections.some(connection => connection.Level?.IsFastChargePoint || connection.PowerKW >= 50),
+    max_power_kw: Math.max(0, ...connections.map(connection => Number(connection.PowerKW) || 0)),
+    connections: connectorNames(connections),
+    source: 'Open Charge Map'
+  };
+}
+
+async function fetchOpenChargeMap(latitude, longitude, distance, maxresults = 50) {
+  const url = new URL('https://api.openchargemap.io/v3/poi/');
+  url.searchParams.set('output', 'json');
+  url.searchParams.set('latitude', latitude);
+  url.searchParams.set('longitude', longitude);
+  url.searchParams.set('distance', distance);
+  url.searchParams.set('distanceunit', 'KM');
+  url.searchParams.set('maxresults', String(maxresults));
+  if (process.env.OCM_API_KEY) url.searchParams.set('key', process.env.OCM_API_KEY);
+  const response = await fetch(url, { headers: { 'User-Agent': 'GenDriveAi/1.0 (EV route planner)' } });
+  if (!response.ok) throw new Error(`Open Charge Map ${response.status}`);
+  return response.json();
+}
 // Fetches nearby POIs from OpenChargeMap and normalizes fields.
 // Environment: set OCM_API_KEY to use higher rate limits; otherwise free access works.
 app.get('/api/chargers', async (req, res) => {
-  // query params: latitude, longitude, distance, fast, cheapest, minReliability
-  const { latitude, longitude, distance = 50, fast, cheapest, minReliability } = req.query;
-  const cacheKey = `chargers:${latitude || 'na'}:${longitude || 'na'}:${distance}:${fast || 'na'}:${cheapest || 'na'}:${minReliability || 'na'}`;
+  const { latitude, longitude, distance = 50, fast, cheapest, connector, max_price_per_kwh } = req.query;
+  const cacheKey = `chargers:${latitude || 'na'}:${longitude || 'na'}:${distance}:${fast || 'na'}:${cheapest || 'na'}:${connector || 'na'}:${max_price_per_kwh || 'na'}`;
   const cached = cache.get(cacheKey);
   if (cached) return res.json(cached);
 
-  // If lat/lon not provided, return cached fallback or error
   if (!latitude || !longitude) {
-    // fallback: use small set of mock results if no coords
-    const fallback = [
-      { id: 1, name: 'ChargeFast A1', network: 'ChargeFast', lat: 28.7041, lon: 77.1025, price_per_kwh: 0.35, rating: 4.6, reliability: 0.95, avg_wait_min: 5, fast: true },
-      { id: 2, name: 'EcoCharge B2', network: 'EcoCharge', lat: 28.5355, lon: 77.3910, price_per_kwh: 0.28, rating: 4.1, reliability: 0.82, avg_wait_min: 12, fast: false }
-    ];
-    cache.set(cacheKey, fallback);
-    return res.json(fallback);
+    return res.status(400).json({ error: 'latitude and longitude are required' });
   }
 
   try {
@@ -305,8 +349,8 @@ app.get('/api/chargers', async (req, res) => {
     if (!r.ok) throw new Error(`OCM ${r.status}`);
     const data = await r.json();
 
-    // Normalize results into our format
-    const results = data.map((p, idx) => {
+    const results = data.map(normalizeCharger).map(injectAmenities);
+    /*
       // OpenChargeMap fields: AddressInfo, Connections, UsageCost, Rating
       const addr = p.AddressInfo || {};
       const connections = p.Connections || [];
@@ -322,8 +366,8 @@ app.get('/api/chargers', async (req, res) => {
       const fastFlag = connections.some(c => (c.Level && c.Level.IsFastChargePoint) || (c.PowerKW && c.PowerKW >= 50));
       
       // usage cost sometimes available, if not, provide realistic mock based on network
-      let price = p.UsageCost ? parseFloat((p.UsageCost.match(/\d+(\.\d+)?/) || [NaN])[0]) : null;
-      if (isNaN(price) || price === null) {
+      const tariff = parseReportedTariff(p.UsageCost);
+      if (false) {
         const network = (p.OperatorInfo?.Title || '').toLowerCase();
         if (network.includes('tesla')) price = 40;
         else if (network.includes('ionity')) price = 55;
@@ -341,33 +385,30 @@ app.get('/api/chargers', async (req, res) => {
         network: p.OperatorInfo && p.OperatorInfo.Title || 'Unknown',
         lat: addr.Latitude,
         lon: addr.Longitude,
-        price_per_kwh: price,
+        ...tariff,
+        tariff_text: p.UsageCost || null,
         rating: p.Rating || null,
-        reliability: 0.85, // default until we compute from observations
-        avg_wait_min: 5,
+        reliability: chargerStats[p.ID] ? Number((chargerStats[p.ID].successes / chargerStats[p.ID].attempts).toFixed(2)) : null,
+        avg_wait_min: chargerStats[p.ID] ? Number(chargerStats[p.ID].ewmaWait.toFixed(1)) : null,
         fast: fastFlag,
         connections: connTypes || 'Unknown',
-        raw: p
+        source: 'Open Charge Map'
       });
     });
 
-    // apply simple filters
+    */
+    // Apply driver-specified filters to normalized provider records.
     let filtered = results;
     if (fast === 'true') filtered = filtered.filter(c => c.fast);
-    if (minReliability) filtered = filtered.filter(c => c.reliability >= parseFloat(minReliability));
+    if (connector) filtered = filtered.filter(c => c.connections.toLowerCase().includes(String(connector).toLowerCase()));
+    if (Number(max_price_per_kwh) > 0) filtered = filtered.filter(c => c.price_per_kwh === null || c.price_per_kwh <= Number(max_price_per_kwh));
     if (cheapest === 'true') filtered.sort((a,b) => (a.price_per_kwh || 999) - (b.price_per_kwh || 999));
 
     cache.set(cacheKey, filtered);
     return res.json(filtered);
   } catch (err) {
     console.error('chargers fetch error', err);
-    // fallback to small mock
-    const fallback = [
-      { id: 1, name: 'ChargeFast A1', network: 'ChargeFast', lat: 28.7041, lon: 77.1025, price_per_kwh: 0.35, rating: 4.6, reliability: 0.95, avg_wait_min: 5, fast: true },
-      { id: 2, name: 'EcoCharge B2', network: 'EcoCharge', lat: 28.5355, lon: 77.3910, price_per_kwh: 0.28, rating: 4.1, reliability: 0.82, avg_wait_min: 12, fast: false }
-    ];
-    cache.set(cacheKey, fallback);
-    return res.json(fallback);
+    return res.status(502).json({ error: 'Unable to retrieve live charging-station data', chargers: [] });
   }
 });
 
@@ -485,12 +526,12 @@ function pointToLineDistance(lat, lon, lat1, lon1, lat2, lon2) {
 
 // GET /api/route-chargers?start_lat=X&start_lon=Y&end_lat=X&end_lon=Y
 app.get('/api/route-chargers', async (req, res) => {
-  const { start_lat, start_lon, end_lat, end_lon } = req.query;
+  const { start_lat, start_lon, end_lat, end_lon, connector, max_price_per_kwh } = req.query;
   if (!start_lat || !start_lon || !end_lat || !end_lon) {
     return res.status(400).json({ error: 'Missing coordinates' });
   }
 
-  const cacheKey = `route-chargers:${start_lat}:${start_lon}:${end_lat}:${end_lon}`;
+  const cacheKey = `route-chargers:${start_lat}:${start_lon}:${end_lat}:${end_lon}:${connector || 'any'}:${max_price_per_kwh || 'any'}`;
   const cached = cache.get(cacheKey);
   if (cached) return res.json(cached);
 
@@ -508,76 +549,90 @@ app.get('/api/route-chargers', async (req, res) => {
     const totalDistance = route.distance / 1000;
     const coords = route.geometry.coordinates;
 
-    // Midpoint for charger search
-    const midIdx = Math.floor(coords.length / 2);
-    const midLat = coords[midIdx][1];
-    const midLon = coords[midIdx][0];
-    
-    // Search for chargers in 2 corridors: start region + end region
+    // Search for chargers at multiple points along the route corridor
     const chargersSet = new Map();
-    
-    // Fetch from start region
     const apiKey = process.env.OCM_API_KEY || '';
-    for (const [searchLat, searchLon] of [[parseFloat(start_lat), parseFloat(start_lon)], [parseFloat(end_lat), parseFloat(end_lon)]]) {
+    
+    // Sample search points along the route (every ~100-150km, max 8 points)
+    const searchPoints = [];
+    const numPoints = Math.max(1, Math.min(8, Math.ceil(totalDistance / 100)));
+    
+    for (let i = 0; i <= numPoints; i++) {
+      const idx = Math.floor((coords.length - 1) * (i / numPoints));
+      searchPoints.push([coords[idx][1], coords[idx][0]]);
+    }
+    
+    // Execute searches for each sampled point
+    for (const [searchLat, searchLon] of searchPoints) {
       const url = new URL('https://api.openchargemap.io/v3/poi/');
       url.searchParams.set('output', 'json');
       url.searchParams.set('latitude', searchLat);
       url.searchParams.set('longitude', searchLon);
       url.searchParams.set('distance', '80');
       url.searchParams.set('distanceunit', 'KM');
-      url.searchParams.set('maxresults', '100');
+      url.searchParams.set('maxresults', '50'); // Reduced per point to stay within limits but broad overall
       if (apiKey) url.searchParams.set('key', apiKey);
 
-      const r = await fetch(url.toString(), { headers: { 'User-Agent': 'GenDriveAi/1.0' } });
-      if (!r.ok) continue;
-      const data = await r.json();
+      try {
+        const r = await fetch(url.toString(), { 
+          headers: { 'User-Agent': 'GenDriveAi/1.0' },
+          timeout: 5000 
+        });
+        if (!r.ok) continue;
+        const data = await r.json();
 
-      data.forEach((p, idx) => {
-        if (chargersSet.has(p.ID)) return;
-        const addr = p.AddressInfo || {};
-        const connections = p.Connections || [];
-        const connTypes = [...new Set(connections.map(c => {
-          const title = c.ConnectionType?.Title || '';
-          if (title.includes('CCS')) return 'CCS';
-          if (title.includes('Type 2')) return 'Type 2';
-          if (title.includes('Tesla')) return 'Tesla Supercharger';
-          if (title.includes('CHAdeMO')) return 'CHAREMO'; // Note: matches previous logic but let's fix typo to CHAdeMO
-          return title;
-        }).filter(t => t))].join(', ');
-        
-        const fastFlag = connections.some(c => (c.Level && c.Level.IsFastChargePoint) || (c.PowerKW && c.PowerKW >= 50));
-        
-        let price = p.UsageCost ? parseFloat((p.UsageCost.match(/\d+(\.\d+)?/) || [NaN])[0]) : null;
-        if (isNaN(price) || price === null) {
-          const network = (p.OperatorInfo?.Title || '').toLowerCase();
-          if (network.includes('tesla')) price = 40;
-          else if (network.includes('ionity')) price = 55;
-          else if (network.includes('tata power')) price = 22;
-          else if (network.includes('zeon')) price = 24;
-          else if (network.includes('fortum')) price = 28;
-          else if (network.includes('statiq')) price = 18;
-          else if (network.includes('shell')) price = 35;
-          else if (network.includes('chargefast')) price = 15;
-          else if (network.includes('relux')) price = 21;
-          else if (network.includes('jio-bp')) price = 23;
-          else if (network.includes('bpcl')) price = 19;
-          else if (network.includes('glida')) price = 26;
-          else price = 25;
-        }
-        
-        chargersSet.set(p.ID, injectAmenities({
-          id: p.ID,
-          name: addr.Title || 'Unknown',
-          network: p.OperatorInfo?.Title || 'Unknown',
-          lat: addr.Latitude,
-          lon: addr.Longitude,
-          price_per_kwh: price,
-          rating: p.Rating || null,
-          reliability: chargerStats[p.ID]?.reliability || 0.85,
-          fast: fastFlag,
-          connections: connTypes || 'Unknown'
-        }));
-      });
+        data.forEach((p, idx) => {
+          if (chargersSet.has(p.ID)) return;
+          const charger = normalizeCharger(p);
+          chargersSet.set(p.ID, injectAmenities(charger));
+          return;
+          const addr = p.AddressInfo || {};
+          const connections = p.Connections || [];
+          const connTypes = [...new Set(connections.map(c => {
+            const title = c.ConnectionType?.Title || '';
+            if (title.includes('CCS')) return 'CCS';
+            if (title.includes('Type 2')) return 'Type 2';
+            if (title.includes('Tesla')) return 'Tesla Supercharger';
+            if (title.includes('CHAdeMO')) return 'CHAdeMO';
+            return title;
+          }).filter(t => t))].join(', ');
+          
+          const fastFlag = connections.some(c => (c.Level && c.Level.IsFastChargePoint) || (c.PowerKW && c.PowerKW >= 50));
+          
+          let price = p.UsageCost ? parseFloat((p.UsageCost.match(/\d+(\.\d+)?/) || [NaN])[0]) : null;
+          if (isNaN(price) || price === null) {
+            const network = (p.OperatorInfo?.Title || '').toLowerCase();
+            if (network.includes('tesla')) price = 40;
+            else if (network.includes('ionity')) price = 55;
+            else if (network.includes('tata power')) price = 22;
+            else if (network.includes('zeon')) price = 24;
+            else if (network.includes('fortum')) price = 28;
+            else if (network.includes('statiq')) price = 18;
+            else if (network.includes('shell')) price = 35;
+            else if (network.includes('chargefast')) price = 15;
+            else if (network.includes('relux')) price = 21;
+            else if (network.includes('jio-bp')) price = 23;
+            else if (network.includes('bpcl')) price = 19;
+            else if (network.includes('glida')) price = 26;
+            else price = 25;
+          }
+          
+          chargersSet.set(p.ID, injectAmenities({
+            id: p.ID,
+            name: addr.Title || 'Unknown',
+            network: p.OperatorInfo?.Title || 'Unknown',
+            lat: addr.Latitude,
+            lon: addr.Longitude,
+            price_per_kwh: price,
+            rating: p.Rating || null,
+            reliability: chargerStats[p.ID]?.reliability || 0.85,
+            fast: fastFlag,
+            connections: connTypes || 'Unknown'
+          }));
+        });
+      } catch (err) {
+        console.error(`Search failed at ${searchLat}, ${searchLon}`, err.message);
+      }
     }
 
     // Calculate distance to route for each charger
@@ -591,15 +646,21 @@ app.get('/api/route-chargers', async (req, res) => {
     });
 
     // Filter chargers within 25km of route
-    const onRoute = chargersWithDist.filter(c => c.distance_to_route_km <= 25);
+    const onRoute = chargersWithDist.filter(c => {
+      if (c.distance_to_route_km > 25) return false;
+      if (connector && !c.connections.toLowerCase().includes(String(connector).toLowerCase())) return false;
+      return !(Number(max_price_per_kwh) > 0 && c.price_per_kwh !== null && c.price_per_kwh > Number(max_price_per_kwh));
+    });
 
     // Score & sort: prioritize cheap + reliable + close to route
     const withScores = onRoute.map(c => {
-      const priceScore = (c.price_per_kwh || 30) / 30; // normalize to 0-1
-      const reliabilityScore = 1 - c.reliability; // prefer high reliability (lower score)
+      // Unknown tariffs are deliberately not presented as cheap. They stay in
+      // the list so the driver can inspect the station and its operator app.
+      const priceScore = c.price_per_kwh === null ? 1.25 : Math.min(c.price_per_kwh / 30, 1);
+      const reliabilityScore = c.reliability === null ? 0.5 : 1 - c.reliability;
       const distanceScore = Math.min(c.distance_to_route_km / 25, 1); // prefer close (lower score)
       const totalScore = priceScore * 0.5 + reliabilityScore * 0.3 + distanceScore * 0.2;
-      return { ...c, score: totalScore };
+      return { ...c, score: Number(totalScore.toFixed(3)), recommendation: c.price_per_kwh === null ? 'Tariff unavailable' : 'Reported tariff' };
     });
 
     withScores.sort((a, b) => a.score - b.score);
@@ -632,11 +693,63 @@ app.post('/api/ai-explain', (req, res) => {
     },
     summary: `We analyzed ${1 + (alternatives ? alternatives.length : 0)} chargers on your route. The recommended option offers a great mix of value and convenience.`,
     explanations: [
-      `💰 Cost: At $${selected_charger.price_per_kwh || 'N/A'}/kWh, it's a competitive rate for this route.`,
+      `💰 Cost: At ₹${selected_charger.price_per_kwh || 'N/A'}/kWh, it's a competitive rate for this route.`,
       `📍 Convenience: Located ${selected_charger.distance_to_route_km?.toFixed(1) || 'N/A'}km from your path, minimizing detour time.`,
       `⚡ Speed: This is a ${selected_charger.fast ? 'fast' : 'standard'} charging station.`
     ]
   });
+});
+
+// ---- UNIQUE EV FEATURES: Battery Health & Safety Reports ----
+
+// GET /api/battery-insights
+app.get('/api/battery-insights', (req, res) => {
+  // Simulated State of Health (SOH) and degradation analysis
+  const batteryHealth = {
+    soh: 94.2, // State of Health %
+    cycles: 245,
+    last_check: new Date().toISOString(),
+    projected_life_years: 8.5,
+    health_factors: [
+      { factor: "Fast Charging frequency", impact: "Negative", value: "35%", advice: "Try to use AC charging for daily needs" },
+      { factor: "Temperature management", impact: "Positive", value: "Good", advice: "Battery temp remains within optimal 25-40°C range" },
+      { factor: "Depth of Discharge", impact: "Moderate", value: "Average 65%", advice: "Avoid letting battery drop below 20% frequently" }
+    ],
+    efficiency_insights: {
+      avg_efficiency: 148, // Wh/km
+      best_trip_efficiency: 122,
+      trend: "Improving"
+    }
+  };
+  res.json(batteryHealth);
+});
+
+// Simulated storage for safety reports
+const safetyReports = {}; // { [chargerId]: { dark: number, noStaff: number, remote: number, overallScore: number } }
+
+// POST /api/safety-reports
+app.post('/api/safety-reports', (req, res) => {
+  const { chargerId, issues } = req.body; // issues: { dark, noStaff, remote, etc }
+  if (!chargerId) return res.status(400).json({ error: 'Missing chargerId' });
+
+  if (!safetyReports[chargerId]) {
+    safetyReports[chargerId] = { dark: 0, noStaff: 0, remote: 0, reportsCount: 0 };
+  }
+
+  const report = safetyReports[chargerId];
+  if (issues.dark) report.dark++;
+  if (issues.noStaff) report.noStaff++;
+  if (issues.remote) report.remote++;
+  report.reportsCount++;
+
+  res.json({ message: 'Safety report recorded', currentStats: report });
+});
+
+// GET /api/safety-reports/:chargerId
+app.get('/api/safety-reports/:chargerId', (req, res) => {
+  const id = req.params.chargerId;
+  const report = safetyReports[id] || { dark: 0, noStaff: 0, remote: 0, reportsCount: 0 };
+  res.json(report);
 });
 
 // Nominatim Geocoding Proxy to bypass Access Denied (User-Agent requirement)
@@ -661,7 +774,9 @@ app.get('/api/geocode', async (req, res) => {
       'vellore': [{ lat: '12.9165', lon: '79.1325', display_name: 'Vellore, Tamil Nadu, India' }],
       'tirunelveli': [{ lat: '8.7139', lon: '77.7567', display_name: 'Tirunelveli, Tamil Nadu, India' }],
       'hosur': [{ lat: '12.7409', lon: '77.8253', display_name: 'Hosur, Tamil Nadu, India' }],
-      'thanjavur': [{ lat: '10.7870', lon: '79.1378', display_name: 'Thanjavur, Tamil Nadu, India' }]
+      'thanjavur': [{ lat: '10.7870', lon: '79.1378', display_name: 'Thanjavur, Tamil Nadu, India' }],
+      'pudukottai': [{ lat: '10.3833', lon: '78.8167', display_name: 'Pudukkottai, Tamil Nadu, India' }],
+      'madurai': [{ lat: '9.9252', lon: '78.1198', display_name: 'Madurai, Tamil Nadu, India' }]
     };
     const lowerQ = q.toLowerCase();
     for (const key in localGeocode) {
@@ -689,6 +804,14 @@ app.get('/api/geocode', async (req, res) => {
     res.status(500).json({ error: 'Failed to geocode location' });
   }
 });
+
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, '../frontend/dist')));
+
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+  });
+}
 
 app.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);
